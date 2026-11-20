@@ -1,0 +1,12 @@
+# Le dépôt GitOps tp19-gitops est un dépôt Git SÉPARÉ (lien dans le README)
+tp19-gitops/
+tp20-*/
+# Secrets et clés
+*.key
+*.pem
+.env
+k3s.yaml
+kubeconfig*
+# Divers
+node_modules/
+.vagrant/
