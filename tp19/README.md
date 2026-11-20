@@ -29,7 +29,15 @@
 | **Réconcilié en continu** | Argo CD compare Git et le cluster, et corrige les écarts (*self-heal*, *prune*) |
 
 ## 2. Environnement
-> ⏳
+
+| Élément | Valeur |
+|---|---|
+| Cluster | K3s v1.34.12+k3s1, mono-nœud sur la VM de lab (9,2 Go de RAM, disque 76 Go) |
+| Argo CD | **v3.6.1**, déjà installé par **Helm** (chart `argo-cd` 10.18.0) pour un autre projet de la VM (ApplicationSet `portfolio`) : **réutilisé** pour ce TP, sans toucher aux Applications existantes |
+| CLI `argocd` | v3.6.2, empreinte SHA256 vérifiée (`cli_checksums.txt` : OK) |
+| Dépôt GitOps | [Amal356/tp19-gitops](https://github.com/Amal356/tp19-gitops) (public, lu par Argo CD en *pull*) |
+
+> 🟡 TP en cours : reprise à la connexion du CLI (`port-forward` + `argocd login`), puis partie 2.
 
 ## 3. Partie 1 : installer Argo CD
 > ⏳
@@ -50,7 +58,8 @@
 
 | Problème | Cause | Solution |
 |---|---|---|
-| ⏳ | | |
+| `kubectl apply -n argocd --server-side -f install.yaml` : nombreux `conflict with "helm"` | Argo CD était **déjà installé par Helm** sur la VM (autre activité) ; l'apply côté serveur refuse de modifier les champs gérés par Helm | Installation existante réutilisée. `helm rollback argocd 1` ; seul `argocd-notifications-controller` (passé en v3.6.2 par l'apply) a été remis en v3.6.1 avec `kubectl set image`, car Helm ne détectait pas l'écart |
+| `argocd login` : `connection refused` | `port-forward` non lancé | `kubectl -n argocd port-forward svc/argocd-server 8443:443 &`, puis vérification du log |
 
 ## 9. Sécurité
 > ⏳
