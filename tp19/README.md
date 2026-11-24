@@ -143,7 +143,29 @@ kubectl -n whoami-dev get svc     # whoami ClusterIP 10.43.28.234 (recréé, AGE
 - `git revert` **ajoute** un commit d'annulation au lieu de réécrire l'historique : la suppression et sa correction restent traçables.
 
 ### Rollback par Git
-> 🟡 En cours : commit fautif `5022e4c` (`whoami v9.9.9`, tag inexistant) → nouveau Pod en `ImagePullBackOff`, les 2 anciens Pods continuent de servir (rolling update) → `git revert` (`7598623`) → retour automatique à `Healthy`. Capture `git-revert.png` à refaire avec l'état **Degraded** visible (délai `progressDeadlineSeconds` ramené à 60 s pour le test).
+
+```bash
+kubectl -n whoami-dev patch deploy whoami -p '{"spec":{"progressDeadlineSeconds":60}}'   # test : échec déclaré après 60 s au lieu de 600 s
+# Windows : commit fautif (envs/dev newTag: v9.9.9, tag inexistant) -> a60fec1, git push
+argocd app get whoami-dev --hard-refresh     # Synced to main (a60fec1) / Degraded
+# Windows : correction PAR GIT
+git revert --no-edit HEAD && git push        # 9c2176e
+argocd app get whoami-dev --refresh          # Synced to main (9c2176e) / Healthy
+```
+
+![git-revert](captures/git-revert.png)
+
+| Moment | Sync | Health | Pods |
+|---|---|---|---|
+| Commit fautif `a60fec1` appliqué | Synced to main (a60fec1) | **Degraded** | 2 anciens Pods `Running` + 1 nouveau Pod `whoami-d777bd85-…` en **`ImagePullBackOff`** |
+| Après `git revert` (`9c2176e`) | Synced to main (9c2176e) | **Healthy** | les 2 Pods `Running` seulement ; le Pod cassé a disparu |
+
+- **Argo CD a fidèlement appliqué Git, même une erreur** : `Synced` signifie « conforme à Git », pas « fonctionnel ». C'est `Health` qui révèle le problème (`Degraded`), après `ProgressDeadlineExceeded` sur le Deployment.
+- **Pas d'interruption de service** : grâce au *rolling update* (`maxUnavailable`), Kubernetes garde les anciens Pods tant que les nouveaux ne sont pas prêts.
+- **Correction par Git, pas dans le cluster** : `git revert` crée un commit d'annulation, poussé, puis appliqué automatiquement. L'historique garde la trace de l'erreur **et** de sa correction (qui, quand, quoi).
+- **Rollback par l'UI** (*History and rollback*) : impossible tant que `automated` est actif. Argo CD remettrait aussitôt l'état de Git. En GitOps, on corrige dans Git.
+- `progressDeadlineSeconds: 60` a été appliqué par `kubectl patch` pour le test. Le champ n'étant pas décrit dans Git, Argo CD ne l'écrase pas. En production, il serait déclaré dans `base/deployment.yaml` pour détecter vite un déploiement bloqué.
+- Plusieurs essais ont été nécessaires (commits `Reapply`/`Revert` dans l'historique) : la réparation avait été poussée **avant** que l'état `Degraded` n'apparaisse (délai par défaut de 600 s). Ce sont des erreurs de manipulation, mais l'historique Git les rend **toutes visibles et réversibles**.
 
 ## 6. Partie 4 : ApplicationSet
 > ⏳
@@ -168,7 +190,7 @@ kubectl -n whoami-dev get svc     # whoami ClusterIP 10.43.28.234 (recréé, AGE
 |---|---|---|
 | `captures/argocd-synced.png` | Application `whoami-dev` Synced / Healthy dans l'UI | ✅ |
 | `captures/self-heal.png` | `kubectl scale` annulé par Argo CD | ✅ |
-| `captures/git-revert.png` | Application Degraded puis rétablie après `git revert` | ⏳ |
+| `captures/git-revert.png` | Application Degraded puis rétablie après `git revert` | ✅ |
 | `captures/applicationset.png` | Trois Applications générées par l'ApplicationSet | ⏳ |
 | `captures/promotion-pr.png` | Pull Request de promotion vers staging | ⏳ |
 | `captures/same-digest.png` | Même digest d'image en dev et en staging | ⏳ |
