@@ -9,10 +9,11 @@ Objectif de la partie : déployer depuis Git avec Argo CD puis Flux CD, et promo
 | TP | Sujet | Dossier | Dépôt GitOps | État |
 |---|---|---|---|---|
 | TP19 | GitOps avec Argo CD : synchronisation, prune, self-healing, ApplicationSet, promotion | [tp19/](tp19/README.md) | [tp19-gitops](https://github.com/Amal356/tp19-gitops) | ✅ 6/6 captures (+3 complémentaires) |
-| TP20 | GitOps avec Flux : bootstrap, Kustomization, HelmRelease, comparaison | tp20/ | — | ⏳ |
+| TP20 | GitOps avec Flux : bootstrap, Kustomization, HelmRelease, comparaison | [tp20/](tp20/README.md) | [tp20-flux](https://github.com/Amal356/tp20-flux) | ✅ 5/5 captures + comparaison |
 
 ## Fil rouge sécurité
 - Git est la **source de vérité** : chaque changement est relu (Pull Request), tracé et réversible (`git revert`).
 - Modèle **pull** : l'agent GitOps tire les changements depuis GitHub ; aucun port entrant ni identifiant du cluster dans la CI.
 - Branche `main` protégée (PR obligatoire, 1 approbation).
-- Aucun secret dans Git (mot de passe admin Argo CD jamais affiché ni commité).
+- Aucun secret dans Git (mot de passe admin Argo CD jamais affiché ni commité ; jeton GitHub Flux saisi sans écho, limité à un dépôt et 7 jours).
+- Remédiation automatique : `selfHeal` (Argo CD), `prune`, rollback Helm (Flux).
