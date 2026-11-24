@@ -168,10 +168,121 @@ argocd app get whoami-dev --refresh          # Synced to main (9c2176e) / Health
 - Plusieurs essais ont été nécessaires (commits `Reapply`/`Revert` dans l'historique) : la réparation avait été poussée **avant** que l'état `Degraded` n'apparaisse (délai par défaut de 600 s). Ce sont des erreurs de manipulation, mais l'historique Git les rend **toutes visibles et réversibles**.
 
 ## 6. Partie 4 : ApplicationSet
-> ⏳
+
+```yaml
+# argocd/applicationset.yaml (TODO complété) : générateur git "directories" -> une Application par envs/*
+generators:
+  - git:
+      repoURL: https://github.com/Amal356/tp19-gitops.git
+      revision: main
+      directories: [{ path: envs/* }]
+template:
+  metadata: { name: "whoami-{{ .path.basename }}" }
+  spec: { source: { path: "{{ .path.path }}" }, destination: { namespace: "whoami-{{ .path.basename }}" } }
+# sync automatique pour dev et staging, MANUELLE pour la prod
+templatePatch: |
+  {{- if ne .path.basename "prod" }}
+  spec:
+    syncPolicy:
+      automated: { prune: true, selfHeal: true }
+  {{- end }}
+```
+
+```bash
+argocd app delete whoami-dev --cascade=false -y      # l'Application manuelle est retirée, ses ressources restent
+kubectl apply -f "https://raw.githubusercontent.com/Amal356/tp19-gitops/main/argocd/applicationset.yaml?n=$(date +%s)"
+argocd app list                                      # whoami-dev / whoami-staging : Auto-Prune ; whoami-prod : Manual, OutOfSync / Missing
+argocd app sync whoami-prod && argocd app wait whoami-prod --health    # déploiement de la prod décidé par une personne
+```
+
+![applicationset](captures/applicationset.png)
+
+| Application (générée) | Politique | Namespace | Réplicas | Image |
+|---|---|---|---|---|
+| `whoami-dev` | **Auto-Prune** (automated + prune + selfHeal) | `whoami-dev` | 2 | `traefik/whoami:v1.10.1` |
+| `whoami-staging` | **Auto-Prune** | `whoami-staging` | 2 | `traefik/whoami:v1.10.0` |
+| `whoami-prod` | **Manual** | `whoami-prod` | 3 | `traefik/whoami:v1.10.0` |
+
+- **Un seul ApplicationSet** (`whoami`) génère les 3 Applications à partir des dossiers `envs/*`. Ajouter un environnement revient à créer un dossier dans Git. Le nom (`whoami-<dossier>`), le chemin et le namespace sont calculés par les **templates Go**.
+- **Une seule base, des différences par environnement** : Kustomize (`envs/*/kustomization.yaml`) fixe pour chacun le nombre de réplicas, la version de l'image et `WHOAMI_NAME`.
+- `--cascade=false` : supprimer l'Application `whoami-dev` créée à la main **n'a pas supprimé** ses ressources. L'ApplicationSet a recréé une Application du même nom, qui les a reprises sans interruption.
+
+**Quels environnements synchroniser automatiquement ?** dev et staging en **automatique** (déploiement rapide, erreurs sans gravité) ; la **prod en manuel** : après le merge de la PR, une personne déclenche le `sync` au moment choisi (fenêtre de maintenance, équipe disponible). On l'a vu : à sa création, `whoami-prod` est restée **OutOfSync / Missing** jusqu'au `argocd app sync`.
+
+**Comment l'exprimer dans un ApplicationSet ?**
+1. **`templatePatch`** (solution retenue) : un bloc Go template ajouté au modèle, ici `{{- if ne .path.basename "prod" }}` → `automated` pour tout sauf la prod.
+2. **Générateur `list`** avec un paramètre par environnement (`{env: dev, auto: "true"}`, `{env: prod, auto: "false"}`), utilisé dans le `templatePatch`.
+3. Ou garder `automated` partout et ajouter une **fenêtre de synchronisation** (`syncWindows` de l'AppProject) qui interdit les synchronisations de la prod en dehors des créneaux autorisés.
+
+![applicationset-prod-sync](captures/applicationset-prod-sync.png) *(capture complémentaire : `whoami-prod` OutOfSync/Missing puis synchronisée manuellement)*
 
 ## 7. Partie 5 : promotion sans reconstruction
-> ⏳
+
+### Promotion dev → staging par Pull Request
+
+```powershell
+git switch -c promote/staging-v1.10.1
+# envs/staging/kustomization.yaml : newTag v1.10.0 -> v1.10.1 (équivalent de : kustomize edit set image traefik/whoami:v1.10.1)
+git diff                          # une seule ligne modifiée
+git commit -am "chore(staging): promotion whoami v1.10.1"
+git push -u origin HEAD           # puis PR #1 sur GitHub, relecture, merge
+```
+
+![promotion-pr](captures/promotion-pr.png)
+
+- La PR **#1** (`promote/staging-v1.10.1` → `main`) contient **1 commit, 1 fichier, 1 ligne** : `newTag: v1.10.0` → `newTag: v1.10.1`. La relecture porte exactement sur **ce qui va changer en staging**.
+- Après le merge (commit `880dded` sur `main`), Argo CD a synchronisé staging **automatiquement** : `whoami-staging` → `Synced to main (880dded)` / `Healthy`.
+
+### Même image, même digest
+
+```bash
+for ns in whoami-dev whoami-staging; do
+  kubectl -n $ns get pod -l app=whoami -o jsonpath='{range .items[*]}{.metadata.name}  {.spec.containers[0].image}  {.status.containerStatuses[0].imageID}{"\n"}{end}'
+done
+```
+
+![same-digest](captures/same-digest.png)
+
+| Environnement | Pods | Image | Digest |
+|---|---|---|---|
+| dev | `whoami-5d95d59477-76n88`, `-9qmj6` | `traefik/whoami:v1.10.1` | `sha256:6956a30c7d33f61bb7fdf1c14dcb3192fca4093cd5b91b5f9b38862862072fe9` |
+| staging | `whoami-9bdd6c5fb-2rkqv`, `-dh5fb` | `traefik/whoami:v1.10.1` | `sha256:6956a30c7d33f61bb7fdf1c14dcb3192fca4093cd5b91b5f9b38862862072fe9` |
+
+- **Digest identique** en dev et en staging : c'est **le même artefact, octet pour octet**. On n'a rien reconstruit : on a seulement déplacé une **référence** dans Git (*build once, deploy many*). Ce qui a été testé en dev est exactement ce qui tourne en staging.
+- Un **tag est mobile** (on peut repousser `v1.10.1` sur une autre image), alors qu'un **digest est immuable** (hash du contenu). Pour une garantie totale, on peut promouvoir par digest (`kustomize edit set image traefik/whoami@sha256:…`), et vérifier la **signature** de ce digest (Cosign, TP12) à l'admission (Kyverno `verifyImages`, TP17).
+- Les noms de ReplicaSet diffèrent (`5d95d59477` contre `9bdd6c5fb`) parce que le **ConfigMap** de chaque environnement est différent (`WHOAMI_NAME`), ce qui change le *pod template*. L'**image**, elle, est la même.
+
+### Promotion staging → prod (synchronisation manuelle)
+
+```powershell
+git switch main && git pull && git switch -c promote/prod-v1.10.1
+# envs/prod/kustomization.yaml : newTag v1.10.0 -> v1.10.1
+git commit -am "chore(prod): promotion whoami v1.10.1" && git push -u origin HEAD     # PR #2, merge -> 658de41
+```
+```text
+$ argocd app get whoami-prod --refresh
+Sync Status:  OutOfSync from main (658de41)     <- la prod ne se déploie PAS toute seule
+Health Status: Healthy                          <- l'ancienne version continue de tourner
+$ argocd app sync whoami-prod && argocd app wait whoami-prod --health
+deployment.apps/whoami configured   (ConfigMap et Service : unchanged)
+Sync Status:  Synced to main (658de41)
+Health Status: Healthy
+```
+- Après le merge, la prod est restée **OutOfSync** : Argo CD a **détecté** le changement, mais ne l'a pas appliqué (`Sync Policy: Manual`). Le déploiement a été **déclenché volontairement**, au moment choisi.
+- Seul le Deployment a été modifié (`configured`) : Argo CD n'applique que le **diff**, le ConfigMap et le Service sont `unchanged`.
+- La même version v1.10.1 (même digest) a donc traversé dev → staging → prod **sans aucune reconstruction**, avec une PR relue à chaque étape.
+
+### Protection de `main`
+
+Ruleset `protect-main` sur le dépôt `tp19-gitops` (branche par défaut) : **Pull Request obligatoire**, **1 approbation**, **force push interdit**.
+
+**Pourquoi la revue de la PR devient la revue du changement en production ?** En GitOps, `main` **est** l'état désiré du cluster : tout ce qui est fusionné dans `main` est (ou sera, après la synchronisation) déployé par Argo CD. Si aucun commit direct n'est possible sur `main`, la **seule** façon de modifier la production est une PR approuvée par une **autre personne**. La revue de code devient donc le **contrôle de changement** (*change management*) :
+- **quatre yeux** : personne ne peut déployer seul ;
+- **traçabilité** : la PR conserve qui a proposé, qui a approuvé, quand, et le diff exact ;
+- **réversibilité** : `git revert` de la PR fusionnée ;
+- **aucun accès direct au cluster** n'est nécessaire pour déployer : seul Argo CD, dans le cluster, applique (modèle *pull*). Les identifiants du cluster ne sortent pas.
+
+> Limite du lab : avec un seul compte GitHub, l'auteure ne peut pas approuver sa propre PR. La règle impose bien une 2ᵉ personne, ce qui est le comportement voulu dans une équipe.
 
 ## 8. Difficultés rencontrées
 
@@ -182,7 +293,15 @@ argocd app get whoami-dev --refresh          # Synced to main (9c2176e) / Health
 | 7 NetworkPolicies `argocd-*-network-policy` en trop | Créées par l'`apply` du manifeste officiel, en plus des 4 NetworkPolicies gérées par Helm | Supprimées une par une (seulement celles sans `app.kubernetes.io/managed-by=Helm`) |
 
 ## 9. Sécurité
-> ⏳
+
+- **Git, source de vérité unique** : tout changement passe par un commit ou une PR (auteur, date, diff), réversible par `git revert`. Les essais ratés eux-mêmes sont tracés.
+- **Modèle pull** : Argo CD, dans le cluster, tire le dépôt **public** en lecture seule. Aucun port entrant vers la VM, aucun webhook, aucun identifiant du cluster dans une CI.
+- **Self-heal** : toute modification manuelle (erreur ou malveillance) est **annulée** et visible dans les événements. **Prune** : pas de ressource orpheline.
+- **Prod en synchronisation manuelle**, plus **`main` protégée** (PR + 1 approbation + pas de force push) : contrôle humain avant la production.
+- **Promotion sans reconstruction** : même digest de dev à prod. Le prolongement naturel est d'épingler le digest et de vérifier sa **signature** (Cosign, TP12) à l'admission (Kyverno `verifyImages`, TP17).
+- **Secrets** : le mot de passe admin d'Argo CD n'a jamais été affiché dans les captures ni commité (il est lu dans le Secret `argocd-initial-admin-secret` au moment du login). À faire en production : changer ce mot de passe, supprimer le Secret initial, utiliser le SSO (Dex/OIDC, comme Keycloak au TP16) et le RBAC d'Argo CD (`argocd-rbac-cm`), et isoler chaque équipe dans un **AppProject** (dépôts et namespaces autorisés) au lieu du projet `default`.
+- **Plateforme partagée** : l'Argo CD est commun avec un autre projet (`portfolio`). Il a été **réutilisé sans le modifier**, et les écarts introduits par erreur (image du notifications-controller, 7 NetworkPolicies) ont été corrigés. C'est le fonctionnement normal d'un cluster *multi-tenant*.
+- CLI `argocd` vérifié par **SHA256**.
 
 ## 10. Livrables
 
@@ -191,8 +310,8 @@ argocd app get whoami-dev --refresh          # Synced to main (9c2176e) / Health
 | `captures/argocd-synced.png` | Application `whoami-dev` Synced / Healthy dans l'UI | ✅ |
 | `captures/self-heal.png` | `kubectl scale` annulé par Argo CD | ✅ |
 | `captures/git-revert.png` | Application Degraded puis rétablie après `git revert` | ✅ |
-| `captures/applicationset.png` | Trois Applications générées par l'ApplicationSet | ⏳ |
-| `captures/promotion-pr.png` | Pull Request de promotion vers staging | ⏳ |
-| `captures/same-digest.png` | Même digest d'image en dev et en staging | ⏳ |
+| `captures/applicationset.png` | Trois Applications générées par l'ApplicationSet | ✅ |
+| `captures/promotion-pr.png` | Pull Request de promotion vers staging | ✅ |
+| `captures/same-digest.png` | Même digest d'image en dev et en staging | ✅ |
 
 Dépôt GitOps avec son historique de commits : [github.com/Amal356/tp19-gitops/commits/main](https://github.com/Amal356/tp19-gitops/commits/main)

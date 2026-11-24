@@ -8,7 +8,7 @@ Objectif de la partie : déployer depuis Git avec Argo CD puis Flux CD, et promo
 
 | TP | Sujet | Dossier | Dépôt GitOps | État |
 |---|---|---|---|---|
-| TP19 | GitOps avec Argo CD : synchronisation, prune, self-healing, ApplicationSet, promotion | [tp19/](tp19/README.md) | [tp19-gitops](https://github.com/Amal356/tp19-gitops) | 🟡 en cours |
+| TP19 | GitOps avec Argo CD : synchronisation, prune, self-healing, ApplicationSet, promotion | [tp19/](tp19/README.md) | [tp19-gitops](https://github.com/Amal356/tp19-gitops) | ✅ 6/6 captures (+3 complémentaires) |
 | TP20 | GitOps avec Flux : bootstrap, Kustomization, HelmRelease, comparaison | tp20/ | — | ⏳ |
 
 ## Fil rouge sécurité
